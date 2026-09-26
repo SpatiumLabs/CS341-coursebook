@@ -4,10 +4,17 @@ on:
   pull_request:
     branches:
       - master
+  # Manual trigger, for grabbing the current output without waiting on a
+  # PR or a push. Runs on whichever branch you dispatch from, so the
+  # button on master gives you the latest book.
+  workflow_dispatch:
 
-# A PR build has no side effects, so superseding one is always safe:
-# when someone pushes a fixup commit, kill the run for the old commit
-# rather than paying for a 9 minute PDF build nobody will look at.
+# A build here has no side effects -- it compiles and uploads an artifact,
+# it never pushes -- so superseding one is always safe: when someone pushes
+# a fixup commit, or re-dispatches, kill the run for the old commit rather
+# than paying for a 9 minute PDF build nobody will look at. github.ref for a
+# dispatch is refs/heads/<branch>, so a manual run on master never cancels
+# a PR run (those live under refs/pull/N/merge).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,26 +24,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # Read-only: the build checks out and compiles, it never pushes.
+    permissions:
+      contents: read
+
     strategy:
       # The three outputs are independent, and PDF is by far the slowest.
       # With the default fail-fast, a WIKI failure 90 seconds in cancels
       # the 9 minute PDF job, so the run tells you nothing about whether
       # the PDF is healthy and the next push has to rediscover it.
       fail-fast: false
+      # An include list rather than build_focus: [WIKI, EPUB, PDF] so each
+      # focus carries its own artifact path. The three builds land in
+      # different places (_scripts/script.sh and the Makefile decide), and
+      # upload-artifact needs a concrete path to walk.
       matrix:
-        build_focus: [WIKI, EPUB, PDF]
+        include:
+          - build_focus: WIKI
+            artifact_path: _wiki
+          - build_focus: EPUB
+            artifact_path: main.epub
+          - build_focus: PDF
+            artifact_path: main.pdf
     env:
       BUILD_FOCUS: ${{ matrix.build_focus }}
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     # Python 3.7 has no build for ubuntu-24.04 or 26.04, so setup-python
     # could not find it. 3.11 has builds for 22.04, 24.04 and 26.04, and
     # works with panflute 1.12.5, which still targets pandoc 2.7's AST.
     - name: Setup python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7
       with:
         python-version: '3.11'
         cache: pip
@@ -49,3 +70,10 @@ jobs:
     - name: Build coursebook
       run: |
         bash _scripts/script.sh
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: coursebook-${{ matrix.build_focus }}
+        path: ${{ matrix.artifact_path }}
+        if-no-files-found: error
